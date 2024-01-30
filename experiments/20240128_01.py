@@ -16,7 +16,7 @@ RESULT_PATH = "../results"
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
-MEMO = "frequency encodingを追加する"
+MEMO = "frequency encodingを追加する..."
 
 
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
