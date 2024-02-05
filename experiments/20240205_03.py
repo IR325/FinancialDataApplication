@@ -12,34 +12,54 @@ import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
+import tensorflow as tf
 from catboost import CatBoostClassifier, Pool
 from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold, train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 warnings.simplefilter("ignore")
 
 # 共通設定
 BUCKET = "ryusuke-data-competition"
-DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
-RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
+# DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
+DATA_PATH = "../data"
+# RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
+RESULT_PATH = "../results"
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
-MEMO = "EC2で動かせるかのチェック用.精度に関わる機能は20240204_02.pyと同じ"
+MEMO = "20240205_02.pyをベースにNNを追加.計算量膨大になるの怖いためCityをNNの特徴量からは省く.monthもcatboostでエラーが出るからカテゴリ変数にしない．"
 
 
 @dataclass
 class Params:
     n_splits = 5
     n_trials = 2
+    seed = 42
+    methods = ["LightGBM", "CatBoost", "NN"]
+    # 前処理関連
+    drop_cols = []
+    drop_cols_for_nn = ["City"]
+    categorical_features = [
+        "FranchiseCode",
+        "RevLineCr",
+        "LowDoc",
+        "UrbanRural",
+        "State",
+        "BankState",
+        "Sector",
+        "City",
+        "Franchise_or_not",
+        # "DisbursementDate_month",
+        # "ApprovalDate_month",
+    ]
+    encoding_target_cols = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
+    # ハイパラ
     num_boost_round = 1000
     early_stopping_round = 200
-    seed = 42
-    methods = ["LightGBM", "CatBoost"]
-    drop_cols = []
-    categorical_features = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
-    encoding_target_cols = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
+    epochs = 5
     lgb_constant_params = {
         "objective": "binary",
         "metric": "binary_logloss",
@@ -54,6 +74,7 @@ class Params:
         "random_seed": seed,
         "verbose": False,
     }
+    nn_constant_params = {}
     cv_best_params = None
 
     def get_lightgbm_params_range(self, trial):
@@ -76,6 +97,17 @@ class Params:
         }
         return self.catboost_constant_params | variable_params
 
+    def get_nn_params_range(self, trial):
+        valiable_params = {
+            "dropout_rate": trial.suggest_float("nn_dropout_rate", 0.0, 0.5),  # Dropout率
+            "optimizer": trial.suggest_categorical("nn_optimizer", ["adam"]),  # 最適化関数
+            "activation": trial.suggest_categorical("nn_activation", ["relu"]),  # 活性化関数
+            "n_layer": trial.suggest_int("nn_n_layer", 1, 10),  # レイヤー数
+            "hidden_units": trial.suggest_int("nn_hidden_units", 20, 300),  # 隠れ層のユニット数
+            "epochs": trial.suggest_int("nn_epochs", 1, 20),
+        }
+        return self.nn_constant_params | valiable_params
+
 
 def _dict_average(dicts: list) -> dict:
     averaged_dict = {}
@@ -85,8 +117,10 @@ def _dict_average(dicts: list) -> dict:
         for k, v in d.items():
             if type(v) == int:
                 averaged_dict[k] = round((averaged_dict[k] + v) / len(dicts))
-            else:
+            elif type(v) == float:
                 averaged_dict[k] = (averaged_dict[k] + v) / len(dicts)
+            elif type(v) == str:
+                averaged_dict[k] = v  # TODO: 改修必要
 
     return averaged_dict
 
@@ -114,10 +148,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
         df[col + "_month"] = pd.to_datetime(df[col]).apply(lambda x: x.month)
         df = df.drop(columns=col)
     # null処理
-    df[Params.categorical_features] = df[Params.categorical_features].fillna("Unknown")
-    # category型への変換
-    obj_cols = df.select_dtypes(include=object).columns
-    df[obj_cols] = df[obj_cols].astype("category").copy()
+    df[Params.categorical_features] = df[Params.categorical_features].fillna("Unknown").astype("category").copy()
     # frequency encoding
     for col in Params.encoding_target_cols:
         count_dict = dict(df[col].value_counts())
@@ -125,17 +156,45 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def preprocess_data_for_nn(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df_train_for_nn = df_train.drop(columns=["MIS_Status"] + Params.drop_cols_for_nn).copy()
+    df_test_for_nn = df_test.drop(columns=Params.drop_cols_for_nn).copy()
+
+    # 数値型を標準化
+    numerical_cols = df_train_for_nn.select_dtypes(["int", "float"]).columns
+    ss = StandardScaler()
+    ss.fit(df_train_for_nn[numerical_cols])
+    train_numerical_data = ss.transform(df_train_for_nn[numerical_cols])
+    df_train_numerical_for_nn = pd.DataFrame(data=train_numerical_data, columns=ss.get_feature_names_out() + "_nn")
+    test_numerical_data = ss.transform(df_test_for_nn[numerical_cols])
+    df_test_numerical_for_nn = pd.DataFrame(data=test_numerical_data, columns=ss.get_feature_names_out() + "_nn")
+
+    # カテゴリ変数をone hot encoding
+    category_cols = df_train_for_nn.select_dtypes("category").columns
+    ohe = OneHotEncoder(sparse=False)
+    ohe.fit(pd.concat([df_train_for_nn[category_cols], df_test_for_nn[category_cols]]).astype("str"))
+    train_categorical_data = ohe.transform(df_train_for_nn[category_cols].astype("str"))
+    df_train_categorical_for_nn = pd.DataFrame(data=train_categorical_data, columns=ohe.get_feature_names_out() + "_nn")
+    test_categorical_data = ohe.transform(df_test_for_nn[category_cols].astype("str"))
+    df_test_categorical_for_nn = pd.DataFrame(data=test_categorical_data, columns=ohe.get_feature_names_out() + "_nn")
+
+    # 結合
+    df_train = pd.concat([df_train, df_train_numerical_for_nn, df_train_categorical_for_nn], axis=1)
+    df_test = pd.concat([df_test, df_test_numerical_for_nn, df_test_categorical_for_nn], axis=1)
+    return df_train, df_test
+
+
 def lightgbm_training(X_train, y_train, X_eval, y_eval, trial):
     # lightgbm用データセットに変換
     train_dataset = lgb.Dataset(X_train, label=y_train, categorical_feature=Params.categorical_features)
     eval_dataset = lgb.Dataset(X_eval, label=y_eval, categorical_feature=Params.categorical_features)
 
-    if trial:
+    if trial:  # optuna用
         params = Params().get_lightgbm_params_range(trial)
     else:
-        if Params.cv_best_params:
+        if Params.cv_best_params:  # テストデータ予測用モデルの学習の場合
             best_params = {k.split("lgb_")[1]: v for k, v in Params.cv_best_params.items() if "lgb" in k}
-        else:
+        else:  # CV用
             best_params = {k.split("lgb_")[1]: v for k, v in Params.study.best_params.items() if "lgb" in k}
         params = Params.lgb_constant_params | best_params
 
@@ -169,19 +228,58 @@ def catboost_training(X_train, y_train, X_eval, y_eval, trial):
     return model
 
 
-def _train(method, X_train, y_train, X_eval, y_eval, trial):
-    if method == "LightGBM":
-        model = lightgbm_training(X_train, y_train, X_eval, y_eval, trial)
-    elif method == "CatBoost":
-        model = catboost_training(X_train, y_train, X_eval, y_eval, trial)
+def nn_training(X_train, y_train, X_eval, y_eval, trial):
+    if trial:
+        params = Params().get_nn_params_range(trial)
+    else:
+        if Params.cv_best_params:
+            best_params = {k.split("nn_")[1]: v for k, v in Params.cv_best_params.items() if "nn" in k}
+        else:
+            best_params = {k.split("nn_")[1]: v for k, v in Params.study.best_params.items() if "nn" in k}
+        params = Params.nn_constant_params | best_params
+    model = tf.keras.models.Sequential()
+    model.add(tf.keras.layers.Flatten(input_shape=(X_train.shape[1],)))  # 入力層
+    for i in range(params["n_layer"]):  # 隠れ層
+        model.add(tf.keras.layers.Dense(params["hidden_units"], activation=params["activation"]))
+        model.add(tf.keras.layers.Dropout(params["dropout_rate"]))
+    model.add(tf.keras.layers.Dense(1, activation="sigmoid"))  # 出力層
+
+    model.compile(optimizer="adam", loss="binary_crossentropy")
+    model.fit(X_train, y_train, epochs=params["epochs"])
     return model
 
 
-def _predict(method, model, X):
+def _extract_nn_cols(df):
+    return [col for col in df.columns if "nn" in col]
+
+
+def _extract_not_nn_cols(df):
+    return [col for col in df.columns if "nn" not in col]
+
+
+def train(method, X_train, y_train, X_eval, y_eval, trial):
     if method == "LightGBM":
-        pred_proba = model.predict(X)
+        use_cols = _extract_not_nn_cols(X_train)
+        model = lightgbm_training(X_train[use_cols], y_train, X_eval[use_cols], y_eval, trial)
     elif method == "CatBoost":
-        pred_proba = model.predict_proba(X)[:, 1]
+        use_cols = _extract_not_nn_cols(X_train)
+        model = catboost_training(X_train[use_cols], y_train, X_eval[use_cols], y_eval, trial)
+    elif method == "NN":
+        use_cols = _extract_nn_cols(X_train)
+        model = nn_training(X_train[use_cols], y_train, X_eval[use_cols], y_eval, trial)
+    return model
+
+
+def predict(method, model, X):
+    if method == "LightGBM":
+        use_cols = _extract_not_nn_cols(X)
+        pred_proba = model.predict(X[use_cols])
+    elif method == "CatBoost":
+        use_cols = _extract_not_nn_cols(X)
+        pred_proba = model.predict_proba(X[use_cols])[:, 1]
+    elif method == "NN":
+        use_cols = _extract_nn_cols(X)
+        pred_proba = model.predict(X[use_cols]).reshape(-1)
     return pred_proba
 
 
@@ -192,11 +290,11 @@ def objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tu
         model_weights = []
         for j, method in enumerate(methods):
             # 学習
-            model = _train(method, X_train, y_train, X_eval, y_eval, trial)
+            model = train(method, X_train, y_train, X_eval, y_eval, trial)
             # validに対する予測
-            valid_pred_probas[j] = _predict(method, model, X_valid)
+            valid_pred_probas[j] = predict(method, model, X_valid)
             # tuneに対する予測
-            tune_pred_probas[j] = _predict(method, model, X_tune)
+            tune_pred_probas[j] = predict(method, model, X_tune)
             # モデルのweight
             model_weight = trial.suggest_float(f"model_{j}_weight", 0, 1)  # TODO: ここだいぶわかりにくい書き方している
             model_weights.append(model_weight)
@@ -234,9 +332,9 @@ def cv_training(methods, X, y):
         valid_pred_probas = np.zeros((len(methods), X_valid.shape[0]))
         for j, method in enumerate(methods):
             # 学習
-            model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
+            model = train(method, X_train, y_train, X_eval, y_eval, trial=None)
             best_weight.append(Params.study.best_params[f"model_{j}_weight"])
-            valid_pred_probas[j] = _predict(method, model, X_valid)
+            valid_pred_probas[j] = predict(method, model, X_valid)
         valid_pred_proba = np.average(valid_pred_probas, axis=0, weights=best_weight)
         valid_pred = postprocess_prediction(valid_pred_proba, Params.study.best_params["negative_ratio"])
         # 結果の格納
@@ -285,6 +383,8 @@ def Preprocessing():
     # 前処理
     train_data = preprocess_data(train_data)
     test_data = preprocess_data(test_data)
+    # NN用前処理
+    train_data, test_data = preprocess_data_for_nn(train_data, test_data)
 
     # 説明変数と目的変数に分ける
     X = train_data.drop(columns="MIS_Status").copy()
@@ -303,7 +403,7 @@ def Learning(methods, X, y):
     # 各モデルの学習
     for method in methods:
         X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
-        model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
+        model = train(method, X_train, y_train, X_eval, y_eval, trial=None)
         models.append(model)
         save_model_as_pickle(model, filename=f"{method}_model.pickle")
     return models, np.mean(cv_best_weights, axis=0), np.mean(cv_best_negative_ratios)
@@ -312,7 +412,7 @@ def Learning(methods, X, y):
 def Predicting(X_test, methods, models, best_weight, best_negative_ratio):
     test_pred_probas = np.zeros((len(models), X_test.shape[0]))
     for i, (method, model) in enumerate(zip(methods, models)):
-        test_pred_probas[i] = _predict(method, model, X_test)
+        test_pred_probas[i] = predict(method, model, X_test)
     # 予測
     y_pred_proba = np.average(test_pred_probas, axis=0, weights=best_weight)
     # 後処理

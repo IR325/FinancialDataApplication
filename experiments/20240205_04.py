@@ -26,7 +26,7 @@ SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
-MEMO = "EC2で動かせるかのチェック用.精度に関わる機能は20240204_02.pyと同じ"
+MEMO = "20240205_02.pyがベース.categoryなのにint，float型になっていたものをcategory型に.n_trials=1000に"
 
 
 @dataclass
@@ -114,10 +114,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
         df[col + "_month"] = pd.to_datetime(df[col]).apply(lambda x: x.month)
         df = df.drop(columns=col)
     # null処理
-    df[Params.categorical_features] = df[Params.categorical_features].fillna("Unknown")
-    # category型への変換
-    obj_cols = df.select_dtypes(include=object).columns
-    df[obj_cols] = df[obj_cols].astype("category").copy()
+    df[Params.categorical_features] = df[Params.categorical_features].fillna("Unknown").astype("category").copy()
     # frequency encoding
     for col in Params.encoding_target_cols:
         count_dict = dict(df[col].value_counts())

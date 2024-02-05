@@ -1,0 +1,10 @@
+catboost==1.1
+lightgbm==3.3.5
+scikit-learn==1.2.2
+optuna==3.5.0
+tensorflow
+pandas==1.5.3
+# s3関連
+boto3
+fsspec
+s3fs
