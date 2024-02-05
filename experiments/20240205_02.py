@@ -18,8 +18,8 @@ from sklearn.model_selection import KFold, train_test_split
 warnings.simplefilter("ignore")
 
 # 共通設定
-DATA_PATH = "../data"
-RESULT_PATH = "../results"
+DATA_PATH = "../data"  # TODO: ここをs3にしなくてはいけない
+RESULT_PATH = "../results"  # TODO: ここをs3にしなくてはいけない
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
