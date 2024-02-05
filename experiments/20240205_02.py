@@ -19,7 +19,7 @@ from sklearn.model_selection import KFold, train_test_split
 warnings.simplefilter("ignore")
 
 # 共通設定
-BUCKET = "ryusuke-data-competition/"
+BUCKET = "ryusuke-data-competition"
 DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
 RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
 SUMMARY_FILENAME = "summary.csv"
