@@ -8,6 +8,7 @@ import warnings
 from dataclasses import dataclass
 
 import boto3
+import fsspec
 import lightgbm as lgb
 import numpy as np
 import optuna
@@ -274,9 +275,8 @@ def save_cv_detail(methods, cv_scores, cv_best_weights: np.ndarray, cv_best_nega
 
 
 def save_model_as_pickle(model, filename):
-    pickle_byte_obj = pickle.dumps([model])
-    s3_resource = boto3.resource("s3")
-    s3_resource.Object(BUCKET, os.path.join(IND_RESULT_KEY, filename)).put(Body=pickle_byte_obj)
+    with fsspec.open(os.path.join(IND_RESULT_PATH, filename), "wb") as file:
+        pickle.dump(model, f)
 
 
 def Preprocessing():
