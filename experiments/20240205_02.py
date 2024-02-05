@@ -19,9 +19,9 @@ from sklearn.model_selection import KFold, train_test_split
 warnings.simplefilter("ignore")
 
 # 共通設定
-BUCKET = "s3://ryusuke-data-competition/"
-DATA_PATH = os.path.join(BUCKET, "data")
-RESULT_PATH = os.path.join(BUCKET, "results")
+BUCKET = "ryusuke-data-competition/"
+DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
+RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
