@@ -11,9 +11,11 @@ import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
+import xgboost as xgb
 from catboost import CatBoostClassifier, Pool
 from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold, train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 warnings.simplefilter("ignore")
 
@@ -23,7 +25,7 @@ RESULT_PATH = "../results"
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
-MEMO = "catboostのパラメータもチューニング対象に"
+MEMO = "20240202_04をベースに，xgboostを追加"
 
 
 @dataclass
@@ -33,10 +35,13 @@ class Params:
     num_boost_round = 1000
     early_stopping_round = 200
     seed = 42
-    methods = ["LightGBM", "CatBoost"]
+    methods = [
+        "LightGBM",
+        "CatBoost",
+        "XGBoost",
+    ]
     drop_cols = []
     categorical_features = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
-    encoding_target_cols = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
     lgb_constant_params = {
         "objective": "binary",
         "metric": "binary_logloss",
@@ -50,6 +55,12 @@ class Params:
         "iterations": num_boost_round,
         "random_seed": seed,
         "verbose": False,
+    }
+    xgboost_constant_params = {
+        "objective": "binary:logistic",
+        "eval_metric": "logloss",
+        "learning_rate": 0.05,
+        "random_state": seed,
     }
     cv_best_params = None
 
@@ -73,6 +84,17 @@ class Params:
         }
         return self.catboost_constant_params | variable_params
 
+    def get_xgboost_params_range(self, trial):
+        variable_params = {
+            "max_depth": trial.suggest_int("xgboost_max_depth", 1, 10),
+            "colsample_bytree": trial.suggest_float("xgboost_colsample_bytree", 0.2, 1.0),
+            "subsample": trial.suggest_float("xgboost_subsample", 0.2, 1.0),
+            "reg_alpha": trial.suggest_float("xgboost_reg_alpha", 0.001, 0.1, log=True),
+            "reg_lambda": trial.suggest_float("xgboost_reg_lambda", 0.001, 0.1, log=True),
+            "gamma": trial.suggest_float("xgboost_gamma", 0.0001, 0.1, log=True),
+        }
+        return self.xgboost_constant_params | variable_params
+
 
 def _dict_average(dicts: list) -> dict:
     averaged_dict = {}
@@ -90,8 +112,6 @@ def _dict_average(dicts: list) -> dict:
 
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """データの前処理."""
-    # 不要なカラムを削除
-    df = df.drop(columns=Params.drop_cols)
     # 非フランチャイズかフランチャイズかの2値の特徴量を追加
     df["Franchise_or_not"] = (
         df["FranchiseCode"]
@@ -116,9 +136,11 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     obj_cols = df.select_dtypes(include=object).columns
     df[obj_cols] = df[obj_cols].astype("category").copy()
     # frequency encoding
-    for col in Params.encoding_target_cols:
+    for col in Params.categorical_features:
         count_dict = dict(df[col].value_counts())
         df[f"{col}_freq_encoding"] = df[col].map(count_dict).astype(int)
+    # 不要なカラムを削除
+    df = df.drop(columns=Params.drop_cols)
     return df
 
 
@@ -166,11 +188,35 @@ def catboost_training(X_train, y_train, X_eval, y_eval, trial):
     return model
 
 
+def xgboost_training(X_train, y_train, X_eval, y_eval, trial):
+    train_dmatrix = xgb.DMatrix(X_train, label=y_train)
+    eval_dmatrix = xgb.DMatrix(X_eval, label=y_eval)
+
+    if trial:
+        params = Params().get_xgboost_params_range(trial)
+    else:
+        if Params.cv_best_params:
+            best_params = {k.split("xgboost_")[1]: v for k, v in Params.cv_best_params.items() if "xgboost" in k}
+        else:
+            best_params = {k.split("xgboost_")[1]: v for k, v in Params.study.best_params.items() if "xgboost" in k}
+        params = Params.xgboost_constant_params | best_params
+
+    model = xgb.train(
+        params,
+        dtrain=train_dmatrix,
+        evals=[(train_dmatrix, "train"), (eval_dmatrix, "eval")],
+        early_stopping_rounds=Params.early_stopping_round,
+    )
+    return model
+
+
 def _train(method, X_train, y_train, X_eval, y_eval, trial):
     if method == "LightGBM":
         model = lightgbm_training(X_train, y_train, X_eval, y_eval, trial)
     elif method == "CatBoost":
         model = catboost_training(X_train, y_train, X_eval, y_eval, trial)
+    elif method == "XGBoost":
+        model = xgboost_training(X_train, y_train, X_eval, y_eval, trial)
     return model
 
 
@@ -179,6 +225,8 @@ def _predict(method, model, X):
         pred_proba = model.predict(X)
     elif method == "CatBoost":
         pred_proba = model.predict_proba(X)[:, 1]
+    elif method == "XGBoost":
+        pred_proba = model.predict(xgb.DMatrix(X))
     return pred_proba
 
 
@@ -269,6 +317,14 @@ def Preprocessing():
     train_data = preprocess_data(train_data)
     test_data = preprocess_data(test_data)
 
+    # label encoding
+    label_encoding_cols = list(set(Params.categorical_features) - set(Params.drop_cols))
+    for col in label_encoding_cols:
+        encoder = LabelEncoder()
+        encoder.fit(train_data[col].to_list() + test_data[col].to_list())
+        train_data[col] = encoder.transform(train_data[col])
+        test_data[col] = encoder.transform(test_data[col])
+
     # 説明変数と目的変数に分ける
     X = train_data.drop(columns="MIS_Status").copy()
     y = train_data["MIS_Status"].copy()
@@ -295,10 +351,10 @@ def Learning(methods, X, y):
     return models, cv_best_weight, cv_best_negative_ratio
 
 
-def Predicting(X_test, models, best_weight, best_negative_ratio):
+def Predicting(X_test, methods, models, best_weight, best_negative_ratio):
     test_pred_probas = np.zeros((len(models), X_test.shape[0]))
-    for i, model in enumerate(models):
-        test_pred_probas[i] = model.predict(X_test)  # TODO:_predictメソッドを使っていないので，catboostが想定した挙動をしていない
+    for i, (method, model) in enumerate(zip(methods, models)):
+        test_pred_probas[i] = _predict(method, model, X_test)
     # 予測
     y_pred_proba = np.average(test_pred_probas, axis=0, weights=best_weight)
     # 後処理
@@ -315,7 +371,7 @@ def main():
 
     models, best_weight, best_negative_ratio = Learning(Params.methods, X, y)
 
-    Predicting(X_test, models, best_weight, best_negative_ratio)
+    Predicting(X_test, Params.methods, models, best_weight, best_negative_ratio)
 
 
 if __name__ == "__main__":

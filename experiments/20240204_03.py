@@ -11,9 +11,11 @@ import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
+import xgboost as xgb
 from catboost import CatBoostClassifier, Pool
 from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold, train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 warnings.simplefilter("ignore")
 
@@ -23,7 +25,9 @@ RESULT_PATH = "../results"
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
-MEMO = "catboostのパラメータもチューニング対象に"
+IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
+os.makedirs(IND_RESULT_PATH, exist_ok=True)
+MEMO = "20240204_01.pyをベース．CVに利用したモデルをpredictionにも利用．optunaのシードも固定"
 
 
 @dataclass
@@ -33,10 +37,13 @@ class Params:
     num_boost_round = 1000
     early_stopping_round = 200
     seed = 42
-    methods = ["LightGBM", "CatBoost"]
+    methods = [
+        "LightGBM",
+        "CatBoost",
+        "XGBoost",
+    ]
     drop_cols = []
     categorical_features = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
-    encoding_target_cols = ["FranchiseCode", "RevLineCr", "LowDoc", "UrbanRural", "State", "BankState", "Sector", "City", "Franchise_or_not"]
     lgb_constant_params = {
         "objective": "binary",
         "metric": "binary_logloss",
@@ -50,6 +57,12 @@ class Params:
         "iterations": num_boost_round,
         "random_seed": seed,
         "verbose": False,
+    }
+    xgboost_constant_params = {
+        "objective": "binary:logistic",
+        "eval_metric": "logloss",
+        "learning_rate": 0.05,
+        "random_state": seed,
     }
     cv_best_params = None
 
@@ -73,6 +86,17 @@ class Params:
         }
         return self.catboost_constant_params | variable_params
 
+    def get_xgboost_params_range(self, trial):
+        variable_params = {
+            "max_depth": trial.suggest_int("xgboost_max_depth", 1, 10),
+            "colsample_bytree": trial.suggest_float("xgboost_colsample_bytree", 0.2, 1.0),
+            "subsample": trial.suggest_float("xgboost_subsample", 0.2, 1.0),
+            "reg_alpha": trial.suggest_float("xgboost_reg_alpha", 0.001, 0.1, log=True),
+            "reg_lambda": trial.suggest_float("xgboost_reg_lambda", 0.001, 0.1, log=True),
+            "gamma": trial.suggest_float("xgboost_gamma", 0.0001, 0.1, log=True),
+        }
+        return self.xgboost_constant_params | variable_params
+
 
 def _dict_average(dicts: list) -> dict:
     averaged_dict = {}
@@ -90,8 +114,6 @@ def _dict_average(dicts: list) -> dict:
 
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """データの前処理."""
-    # 不要なカラムを削除
-    df = df.drop(columns=Params.drop_cols)
     # 非フランチャイズかフランチャイズかの2値の特徴量を追加
     df["Franchise_or_not"] = (
         df["FranchiseCode"]
@@ -116,9 +138,11 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     obj_cols = df.select_dtypes(include=object).columns
     df[obj_cols] = df[obj_cols].astype("category").copy()
     # frequency encoding
-    for col in Params.encoding_target_cols:
+    for col in Params.categorical_features:
         count_dict = dict(df[col].value_counts())
         df[f"{col}_freq_encoding"] = df[col].map(count_dict).astype(int)
+    # 不要なカラムを削除
+    df = df.drop(columns=Params.drop_cols)
     return df
 
 
@@ -166,11 +190,35 @@ def catboost_training(X_train, y_train, X_eval, y_eval, trial):
     return model
 
 
+def xgboost_training(X_train, y_train, X_eval, y_eval, trial):
+    train_dmatrix = xgb.DMatrix(X_train, label=y_train)
+    eval_dmatrix = xgb.DMatrix(X_eval, label=y_eval)
+
+    if trial:
+        params = Params().get_xgboost_params_range(trial)
+    else:
+        if Params.cv_best_params:
+            best_params = {k.split("xgboost_")[1]: v for k, v in Params.cv_best_params.items() if "xgboost" in k}
+        else:
+            best_params = {k.split("xgboost_")[1]: v for k, v in Params.study.best_params.items() if "xgboost" in k}
+        params = Params.xgboost_constant_params | best_params
+
+    model = xgb.train(
+        params,
+        dtrain=train_dmatrix,
+        evals=[(train_dmatrix, "train"), (eval_dmatrix, "eval")],
+        early_stopping_rounds=Params.early_stopping_round,
+    )
+    return model
+
+
 def _train(method, X_train, y_train, X_eval, y_eval, trial):
     if method == "LightGBM":
         model = lightgbm_training(X_train, y_train, X_eval, y_eval, trial)
     elif method == "CatBoost":
         model = catboost_training(X_train, y_train, X_eval, y_eval, trial)
+    elif method == "XGBoost":
+        model = xgboost_training(X_train, y_train, X_eval, y_eval, trial)
     return model
 
 
@@ -179,19 +227,18 @@ def _predict(method, model, X):
         pred_proba = model.predict(X)
     elif method == "CatBoost":
         pred_proba = model.predict_proba(X)[:, 1]
+    elif method == "XGBoost":
+        pred_proba = model.predict(xgb.DMatrix(X))
     return pred_proba
 
 
-def objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tune, y_tune):
+def objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_tune, y_tune):
     def objective(trial):
         tune_pred_probas = np.zeros((len(methods), X_tune.shape[0]))
-        valid_pred_probas = np.zeros((len(methods), X_valid.shape[0]))
         model_weights = []
         for j, method in enumerate(methods):
             # 学習
             model = _train(method, X_train, y_train, X_eval, y_eval, trial)
-            # validに対する予測
-            valid_pred_probas[j] = _predict(method, model, X_valid)
             # tuneに対する予測
             tune_pred_probas[j] = _predict(method, model, X_tune)
             # モデルのweight
@@ -210,7 +257,6 @@ def objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tu
 def cv_training(methods, X, y):
     best_weights = np.zeros((Params.n_splits, len(methods)))
     best_negative_ratios = []
-    best_params = []
     scores = []
     kf = KFold(n_splits=Params.n_splits, random_state=42, shuffle=True)
     for i, (train_eval_tune_index, valid_index) in enumerate(kf.split(X)):
@@ -223,8 +269,8 @@ def cv_training(methods, X, y):
         y_valid = y.iloc[valid_index].copy()
 
         # optuanaによる最適化
-        Params.study = optuna.create_study(direction="maximize")
-        Params.study.optimize(objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tune, y_tune), n_trials=Params.n_trials)
+        Params.study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=Params.seed + i))
+        Params.study.optimize(objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_tune, y_tune), n_trials=Params.n_trials)
 
         # validの予測
         best_weight = []
@@ -234,14 +280,18 @@ def cv_training(methods, X, y):
             model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
             best_weight.append(Params.study.best_params[f"model_{j}_weight"])
             valid_pred_probas[j] = _predict(method, model, X_valid)
+            # 保存
+            with open(os.path.join(IND_RESULT_PATH, f"CV{i}_{method}.pickle"), mode="wb") as f:
+                pickle.dump(model, f)
+            pd.DataFrame({"y": y_valid, "pred": valid_pred_probas[j]}).to_csv(os.path.join(IND_RESULT_PATH, f"CV{i}_{method}.csv"), index=False)
+
         valid_pred_proba = np.average(valid_pred_probas, axis=0, weights=best_weight)
         valid_pred = postprocess_prediction(valid_pred_proba, Params.study.best_params["negative_ratio"])
         # 結果の格納
         scores.append(f1_score(y_valid, valid_pred, average="macro"))
         best_weights[i] = best_weight
         best_negative_ratios.append(Params.study.best_params["negative_ratio"])
-        best_params.append({k: v for k, v in Params.study.best_params.items() if ((k != "negative_ratio") & ("weight" not in k))})
-    return np.mean(scores), _dict_average(best_params), np.mean(best_weights, axis=0), np.mean(best_negative_ratios)
+    return scores, best_weights, best_negative_ratios
 
 
 def postprocess_prediction(y_pred_proba, negative_ratio):
@@ -250,7 +300,9 @@ def postprocess_prediction(y_pred_proba, negative_ratio):
     return y_pred
 
 
-def save_cv_result(result_df: pd.DataFrame):
+def save_cv_result(cv_score):
+    result_df = pd.DataFrame({"experiment_name": [EXPERIMENT_NAME], "cv_score": [cv_score], "MEMO": [MEMO], "board_score": [None]})
+
     summary_path = os.path.join(RESULT_PATH, SUMMARY_FILENAME)
     if os.path.exists(summary_path):
         df = pd.read_csv(summary_path)
@@ -258,6 +310,13 @@ def save_cv_result(result_df: pd.DataFrame):
         df = pd.DataFrame({"experiment_name": [], "cv_score": [], "MEMO": [], "board_score": []})
     df = pd.concat([df, result_df]).drop_duplicates()
     df.to_csv(summary_path, index=False)
+
+
+def save_cv_detail(methods, cv_scores, cv_best_weights: np.ndarray, cv_best_negative_ratios: np.ndarray):
+    df = pd.DataFrame(data=cv_best_weights, columns=methods)
+    df = pd.concat([df, pd.DataFrame(data=cv_best_negative_ratios, columns=["negative_ratio"])], axis=1)
+    df = pd.concat([df, pd.DataFrame(data=cv_scores, columns=["cv_score"])], axis=1)
+    df.to_csv(os.path.join(IND_RESULT_PATH, "cv_details.csv"), index=False)
 
 
 def Preprocessing():
@@ -269,6 +328,14 @@ def Preprocessing():
     train_data = preprocess_data(train_data)
     test_data = preprocess_data(test_data)
 
+    # label encoding
+    label_encoding_cols = list(set(Params.categorical_features) - set(Params.drop_cols))
+    for col in label_encoding_cols:
+        encoder = LabelEncoder()
+        encoder.fit(train_data[col].to_list() + test_data[col].to_list())
+        train_data[col] = encoder.transform(train_data[col])
+        test_data[col] = encoder.transform(test_data[col])
+
     # 説明変数と目的変数に分ける
     X = train_data.drop(columns="MIS_Status").copy()
     y = train_data["MIS_Status"].copy()
@@ -277,33 +344,27 @@ def Preprocessing():
 
 
 def Learning(methods, X, y):
-    models = []
     # CV
-    cv_score, cv_best_params, cv_best_weight, cv_best_negative_ratio = cv_training(methods, X, y)
-    Params.cv_best_params = cv_best_params
-    print(f"best score: {cv_score}")
-    print(f"best_params: {cv_best_params}")
-    print(f"best weight: {cv_best_weight}")
-    print(f"best negative ratio: {cv_best_negative_ratio}")
-    result_df = pd.DataFrame({"experiment_name": [EXPERIMENT_NAME], "cv_score": [cv_score], "MEMO": [MEMO], "board_score": [None]})
-    save_cv_result(result_df)
-    # 各モデルの学習
-    for method in methods:
-        X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
-        model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
-        models.append(model)
-    return models, cv_best_weight, cv_best_negative_ratio
+    cv_scores, cv_best_weights, cv_best_negative_ratios = cv_training(methods, X, y)
+    save_cv_detail(methods, cv_scores, cv_best_weights, cv_best_negative_ratios)
+    save_cv_result(np.mean(cv_scores))
+    return cv_best_weights, cv_best_negative_ratios
 
 
-def Predicting(X_test, models, best_weight, best_negative_ratio):
-    test_pred_probas = np.zeros((len(models), X_test.shape[0]))
-    for i, model in enumerate(models):
-        test_pred_probas[i] = model.predict(X_test)  # TODO:_predictメソッドを使っていないので，catboostが想定した挙動をしていない
-    # 予測
-    y_pred_proba = np.average(test_pred_probas, axis=0, weights=best_weight)
+def Predicting(X_test, methods, best_weights, best_negative_ratios):
+    y_pred_probas = np.zeros((Params.n_splits, X_test.shape[0]))
+    for i in range(Params.n_splits):
+        test_pred_probas = np.zeros((len(methods), X_test.shape[0]))
+        for j, method in enumerate(methods):
+            # 保存済みモデルから予測する
+            with open(os.path.join(IND_RESULT_PATH, f"CV{i}_{method}.pickle"), mode="rb") as f:
+                model = pickle.load(f)
+            test_pred_probas[j] = _predict(method, model, X_test)
+        # 予測
+        y_pred_proba = np.average(test_pred_probas, axis=0, weights=best_weights[i])
+        y_pred_probas[i] = y_pred_proba
     # 後処理
-    y_pred = postprocess_prediction(y_pred_proba, best_negative_ratio)
-
+    y_pred = postprocess_prediction(np.average(y_pred_probas, axis=0), best_negative_ratios[i])
     # 結果の保存
     sample_submit = pd.read_csv(os.path.join(DATA_PATH, "sample_submission.csv"), index_col=0, header=None)  # 応募用サンプルファイル
     sample_submit[1] = y_pred
@@ -313,9 +374,9 @@ def Predicting(X_test, models, best_weight, best_negative_ratio):
 def main():
     X, y, X_test = Preprocessing()
 
-    models, best_weight, best_negative_ratio = Learning(Params.methods, X, y)
+    best_weights, best_negative_ratios = Learning(Params.methods, X, y)
 
-    Predicting(X_test, models, best_weight, best_negative_ratio)
+    Predicting(X_test, Params.methods, best_weights, best_negative_ratios)
 
 
 if __name__ == "__main__":

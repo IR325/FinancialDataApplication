@@ -23,7 +23,7 @@ RESULT_PATH = "../results"
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
-MEMO = "catboostのパラメータもチューニング対象に"
+MEMO = "20240202_04.pyのPredictの一部を修正．"
 
 
 @dataclass
@@ -295,10 +295,10 @@ def Learning(methods, X, y):
     return models, cv_best_weight, cv_best_negative_ratio
 
 
-def Predicting(X_test, models, best_weight, best_negative_ratio):
+def Predicting(X_test, methods, models, best_weight, best_negative_ratio):
     test_pred_probas = np.zeros((len(models), X_test.shape[0]))
-    for i, model in enumerate(models):
-        test_pred_probas[i] = model.predict(X_test)  # TODO:_predictメソッドを使っていないので，catboostが想定した挙動をしていない
+    for i, (method, model) in enumerate(zip(methods, models)):
+        test_pred_probas[i] = _predict(method, model, X_test)
     # 予測
     y_pred_proba = np.average(test_pred_probas, axis=0, weights=best_weight)
     # 後処理
@@ -315,7 +315,7 @@ def main():
 
     models, best_weight, best_negative_ratio = Learning(Params.methods, X, y)
 
-    Predicting(X_test, models, best_weight, best_negative_ratio)
+    Predicting(X_test, Params.methods, models, best_weight, best_negative_ratio)
 
 
 if __name__ == "__main__":
