@@ -275,7 +275,7 @@ def save_cv_detail(methods, cv_scores, cv_best_weights: np.ndarray, cv_best_nega
 
 
 def save_model_as_pickle(model, filename):
-    with fsspec.open(os.path.join(IND_RESULT_PATH, filename), "wb") as file:
+    with fsspec.open(os.path.join(IND_RESULT_PATH, filename), "wb") as f:
         pickle.dump(model, f)
 
 
