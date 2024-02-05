@@ -307,7 +307,7 @@ def Learning(methods, X, y):
         X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
         model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
         models.append(model)
-        save_model_as_pickle(model, filename="f{method}_model.pickle")
+        save_model_as_pickle(model, filename=f"{method}_model.pickle")
     return models, np.mean(cv_best_weights, axis=0), np.mean(cv_best_negative_ratios)
 
 
