@@ -274,7 +274,7 @@ def save_cv_detail(methods, cv_scores, cv_best_weights: np.ndarray, cv_best_nega
 
 
 def save_model_as_pickle(model, filename):
-    pickle_byte_obj = pickle.dump(model)
+    pickle_byte_obj = pickle.dumps([model])
     s3_resource = boto3.resource("s3")
     s3_resource.Object(BUCKET, os.path.join(IND_RESULT_KEY, filename)).put(Body=pickle_byte_obj)
 
