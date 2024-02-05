@@ -7,6 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 
+import boto3
 import lightgbm as lgb
 import numpy as np
 import optuna
@@ -18,13 +19,14 @@ from sklearn.model_selection import KFold, train_test_split
 warnings.simplefilter("ignore")
 
 # 共通設定
-DATA_PATH = "../data"  # TODO: ここをs3にしなくてはいけない
-RESULT_PATH = "../results"  # TODO: ここをs3にしなくてはいけない
+BUCKET = "s3://ryusuke-data-competition/"
+DATA_PATH = os.path.join(BUCKET, "data")
+RESULT_PATH = os.path.join(BUCKET, "results")
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
-os.makedirs(IND_RESULT_PATH, exist_ok=True)
+IND_RESULT_KEY = IND_RESULT_PATH.split(BUCKET)[1]
 MEMO = "EC2で動かせるかのチェック用"
 
 
@@ -243,7 +245,6 @@ def cv_training(methods, X, y):
         best_weights[i] = best_weight
         best_negative_ratios.append(Params.study.best_params["negative_ratio"])
         best_params.append({k: v for k, v in Params.study.best_params.items() if ((k != "negative_ratio") & ("weight" not in k))})
-    # return np.mean(scores), _dict_average(best_params), np.mean(best_weights, axis=0), np.mean(best_negative_ratios)
     return scores, best_params, best_weights, best_negative_ratios
 
 
@@ -270,6 +271,12 @@ def save_cv_detail(methods, cv_scores, cv_best_weights: np.ndarray, cv_best_nega
     df = pd.concat([df, pd.DataFrame(data=cv_best_negative_ratios, columns=["negative_ratio"])], axis=1)
     df = pd.concat([df, pd.DataFrame(data=cv_scores, columns=["cv_score"])], axis=1)
     df.to_csv(os.path.join(IND_RESULT_PATH, "cv_details.csv"), index=False)
+
+
+def save_model_as_pickle(model, filename):
+    pickle_byte_obj = pickle.dump(model)
+    s3_resource = boto3.resource("s3")
+    s3_resource.Object(BUCKET, os.path.join(IND_RESULT_KEY, filename)).put(Body=pickle_byte_obj)
 
 
 def Preprocessing():
@@ -300,8 +307,7 @@ def Learning(methods, X, y):
         X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
         model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
         models.append(model)
-        with open(os.path.join(IND_RESULT_PATH, f"{EXPERIMENT_NAME}_{method}_model.pickle"), mode="wb") as f:
-            pickle.dump(model, f)
+        save_model_as_pickle(model, filename="f{method}_model.pickle")
     return models, np.mean(cv_best_weights, axis=0), np.mean(cv_best_negative_ratios)
 
 

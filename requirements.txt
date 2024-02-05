@@ -2,3 +2,4 @@ catboost==1.2
 lightgbm==3.3.5
 scikit-learn==1.2.2
 optuna==3.5.0
+boto3
