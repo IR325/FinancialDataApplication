@@ -1,4 +1,4 @@
-files = (../experiments/20240205_02.py ../experiments/20240205_03.py ../experiments/20240205_04.py)
+files = (../experiments/20240205_02.py ../experiments/20240205_04.py)
 
 for file in files;
 do
