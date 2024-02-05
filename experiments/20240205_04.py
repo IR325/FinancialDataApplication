@@ -26,13 +26,13 @@ SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
-MEMO = "20240205_02.pyがベース.categoryなのにint，float型になっていたものをcategory型に.n_trials=1000に"
+MEMO = "20240205_02.pyがベース.categoryなのにint，float型になっていたものをcategory型に.n_trials=500に"
 
 
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 2
+    n_trials = 500
     num_boost_round = 1000
     early_stopping_round = 200
     seed = 42

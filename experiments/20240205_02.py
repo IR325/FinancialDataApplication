@@ -32,7 +32,7 @@ MEMO = "EC2で動かせるかのチェック用.精度に関わる機能は20240
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 2
+    n_trials = 100
     num_boost_round = 1000
     early_stopping_round = 200
     seed = 42
