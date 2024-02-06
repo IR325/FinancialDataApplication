@@ -34,7 +34,7 @@ MEMO = "20240205_02.pyをベースにNNを追加.計算量膨大になるの怖�
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 2
+    n_trials = 100
     seed = 42
     methods = ["LightGBM", "CatBoost", "NN"]
     # 前処理関連

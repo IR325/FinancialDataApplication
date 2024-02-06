@@ -22,6 +22,7 @@ warnings.simplefilter("ignore")
 
 # 実行をどこで行うか
 IS_EC2 = False
+DO_HP_TUNING = False
 # 共通設定
 if IS_EC2:
     BUCKET = "ryusuke-data-competition"
@@ -184,19 +185,51 @@ def preprocess_data_for_nn(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tup
     return df_train, df_test
 
 
+def get_params(method, trial):
+    if method == "lightgbm":
+        if DO_HP_TUNING:
+            if trial:  # optuna用
+                params = Params().get_lightgbm_params_range(trial)
+            else:
+                if Params.cv_best_params:  # テストデータ予測用モデルの学習の場合
+                    best_params = {k.split("lgb_")[1]: v for k, v in Params.cv_best_params.items() if "lgb" in k}
+                else:  # CV用
+                    best_params = {k.split("lgb_")[1]: v for k, v in Params.study.best_params.items() if "lgb" in k}
+                params = Params.lgb_constant_params | best_params
+        else:
+            params = Params.lgb_constant_params | Params.lgb_default_params
+    elif method == "catboost":
+        if DO_HP_TUNING:
+            if trial:
+                params = Params().get_catboost_params_range(trial)
+            else:
+                if Params.cv_best_params:
+                    best_params = {k.split("catboost_")[1]: v for k, v in Params.cv_best_params.items() if "catboost" in k}
+                else:
+                    best_params = {k.split("catboost_")[1]: v for k, v in Params.study.best_params.items() if "catboost" in k}
+                params = Params.catboost_constant_params | best_params
+        else:
+            params = Params.catboost_constant_params | Params.catboost_default_params
+    elif method == "nn":
+        if DO_HP_TUNING:
+            if trial:
+                params = Params().get_nn_params_range(trial)
+            else:
+                if Params.cv_best_params:
+                    best_params = {k.split("nn_")[1]: v for k, v in Params.cv_best_params.items() if "nn" in k}
+                else:
+                    best_params = {k.split("nn_")[1]: v for k, v in Params.study.best_params.items() if "nn" in k}
+                params = Params.nn_constant_params | best_params
+        else:
+            params = Params.nn_constant_params | Params.nn_default_params
+
+
 def lightgbm_training(X_train, y_train, X_eval, y_eval, trial):
     # lightgbm用データセットに変換
     train_dataset = lgb.Dataset(X_train, label=y_train, categorical_feature=Params.categorical_features)
     eval_dataset = lgb.Dataset(X_eval, label=y_eval, categorical_feature=Params.categorical_features)
 
-    if trial:  # optuna用
-        params = Params().get_lightgbm_params_range(trial)
-    else:
-        if Params.cv_best_params:  # テストデータ予測用モデルの学習の場合
-            best_params = {k.split("lgb_")[1]: v for k, v in Params.cv_best_params.items() if "lgb" in k}
-        else:  # CV用
-            best_params = {k.split("lgb_")[1]: v for k, v in Params.study.best_params.items() if "lgb" in k}
-        params = Params.lgb_constant_params | best_params
+    params = get_params("lightgbm", trial)
 
     # LightGBMモデルの学習
     model = lgb.train(
@@ -214,14 +247,7 @@ def catboost_training(X_train, y_train, X_eval, y_eval, trial):
     train_pool = Pool(X_train, label=y_train, cat_features=Params.categorical_features)
     eval_pool = Pool(X_eval, label=y_eval, cat_features=Params.categorical_features)
 
-    if trial:
-        params = Params().get_catboost_params_range(trial)
-    else:
-        if Params.cv_best_params:
-            best_params = {k.split("catboost_")[1]: v for k, v in Params.cv_best_params.items() if "catboost" in k}
-        else:
-            best_params = {k.split("catboost_")[1]: v for k, v in Params.study.best_params.items() if "catboost" in k}
-        params = Params.catboost_constant_params | best_params
+    params = get_params("catboost", trial)
 
     model = CatBoostClassifier(**params)
     model.fit(train_pool, eval_set=[eval_pool], early_stopping_rounds=Params.early_stopping_round, use_best_model=True)
@@ -229,14 +255,7 @@ def catboost_training(X_train, y_train, X_eval, y_eval, trial):
 
 
 def nn_training(X_train, y_train, X_eval, y_eval, trial):
-    if trial:
-        params = Params().get_nn_params_range(trial)
-    else:
-        if Params.cv_best_params:
-            best_params = {k.split("nn_")[1]: v for k, v in Params.cv_best_params.items() if "nn" in k}
-        else:
-            best_params = {k.split("nn_")[1]: v for k, v in Params.study.best_params.items() if "nn" in k}
-        params = Params.nn_constant_params | best_params
+    params = get_params("nn", trial)
     model = tf.keras.models.Sequential()
     model.add(tf.keras.layers.Flatten(input_shape=(X_train.shape[1],)))  # 入力層
     for i in range(params["n_layer"]):  # 隠れ層
