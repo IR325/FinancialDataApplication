@@ -22,10 +22,8 @@ warnings.simplefilter("ignore")
 
 # 共通設定
 BUCKET = "ryusuke-data-competition"
-# DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
-DATA_PATH = "../data"
-# RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
-RESULT_PATH = "../results"
+DATA_PATH = os.path.join(f"s3://{BUCKET}", "data")
+RESULT_PATH = os.path.join(f"s3://{BUCKET}", "results")
 SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
@@ -165,18 +163,18 @@ def preprocess_data_for_nn(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tup
     ss = StandardScaler()
     ss.fit(df_train_for_nn[numerical_cols])
     train_numerical_data = ss.transform(df_train_for_nn[numerical_cols])
-    df_train_numerical_for_nn = pd.DataFrame(data=train_numerical_data, columns=ss.get_feature_names_out() + "_nn")
+    df_train_numerical_for_nn = pd.DataFrame(data=train_numerical_data, columns=ss.get_feature_names_out() + "_nn").fillna(0)
     test_numerical_data = ss.transform(df_test_for_nn[numerical_cols])
-    df_test_numerical_for_nn = pd.DataFrame(data=test_numerical_data, columns=ss.get_feature_names_out() + "_nn")
+    df_test_numerical_for_nn = pd.DataFrame(data=test_numerical_data, columns=ss.get_feature_names_out() + "_nn").fillna(0)
 
     # カテゴリ変数をone hot encoding
     category_cols = df_train_for_nn.select_dtypes("category").columns
     ohe = OneHotEncoder(sparse=False)
     ohe.fit(pd.concat([df_train_for_nn[category_cols], df_test_for_nn[category_cols]]).astype("str"))
     train_categorical_data = ohe.transform(df_train_for_nn[category_cols].astype("str"))
-    df_train_categorical_for_nn = pd.DataFrame(data=train_categorical_data, columns=ohe.get_feature_names_out() + "_nn")
+    df_train_categorical_for_nn = pd.DataFrame(data=train_categorical_data, columns=ohe.get_feature_names_out() + "_nn").fillna(0)
     test_categorical_data = ohe.transform(df_test_for_nn[category_cols].astype("str"))
-    df_test_categorical_for_nn = pd.DataFrame(data=test_categorical_data, columns=ohe.get_feature_names_out() + "_nn")
+    df_test_categorical_for_nn = pd.DataFrame(data=test_categorical_data, columns=ohe.get_feature_names_out() + "_nn").fillna(0)
 
     # 結合
     df_train = pd.concat([df_train, df_train_numerical_for_nn, df_train_categorical_for_nn], axis=1)
