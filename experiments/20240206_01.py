@@ -31,7 +31,7 @@ if IS_EC2:
 else:
     DATA_PATH = "../data"
     RESULT_PATH = "../results"
-    SUMMARY_FILENAME = "summary.csv"
+SUMMARY_FILENAME = "summary.csv"
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
