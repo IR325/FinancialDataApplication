@@ -43,7 +43,7 @@ MEMO = "20240205_03.pyをベース．optunaを利用するか，EC2上で実行�
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 2
+    n_trials = 100
     seed = 42
     methods = ["LightGBM", "CatBoost", "NN"]
     # 前処理関連
