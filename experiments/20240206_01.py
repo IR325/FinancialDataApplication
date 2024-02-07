@@ -21,8 +21,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 warnings.simplefilter("ignore")
 
 # 実行をどこで行うか
-IS_EC2 = False
-DO_HP_TUNING = False
+IS_EC2 = True
+DO_OPTUNA = True
 # 共通設定
 if IS_EC2:
     BUCKET = "ryusuke-data-competition"
@@ -35,7 +35,9 @@ else:
 # 個別設定
 EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
-MEMO = "20240205_03.pyをベース．optunaを利用するか，EC2上で実行するかを決められるように．"
+if not IS_EC2:
+    os.makedirs(IND_RESULT_PATH, exist_ok=True)
+MEMO = "20240205_03.pyをベース．optunaを利用するか，EC2上で実行するかを決められるように．one-hot encoderにignoreオプションを指定"
 
 
 @dataclass
@@ -61,13 +63,37 @@ class Params:
         "verbosity": -1,
         "random_seed": seed,
     }
+    lgb_default_params = {
+        "feature_fraction": 0.05147211415820423,
+        "bagging_fraction": 0.13799550557259313,
+        "num_leaves": 7,
+        "lambda_l1": 1.052639784679391,
+        "lambda_l2": 1.0208686008926133,
+    }
     catboost_constant_params = {
         "learning_rate": 0.05,
         "iterations": num_boost_round,
         "random_seed": seed,
         "verbose": False,
     }
+    catboost_default_params = {
+        "depth": 2,
+        "l2_leaf_reg": 0.7530777289729191,
+        "subsample": 0.04624049256307406,
+        "colsample_bylevel": 0.1263602438198374,
+        "min_data_in_leaf": 11,
+    }
     nn_constant_params = {}
+    nn_default_params = {  # 適当
+        "dropout_rate": 0.1,  # Dropout率
+        "optimizer": "adam",  # 最適化関数
+        "activation": "relu",  # 活性化関数
+        "n_layer": 3,  # レイヤー数
+        "hidden_units": 200,  # 隠れ層のユニット数
+        "epochs": 5,
+    }
+    model_default_weights = [0.530011, 0.469989]
+    model_default_negative_ratio = 0.075890
     cv_best_params = None
 
     def get_lightgbm_params_range(self, trial):
@@ -104,16 +130,17 @@ class Params:
 
 def _dict_average(dicts: list) -> dict:
     averaged_dict = {}
-    for k, v in dicts[0].items():
-        averaged_dict[k] = v
-    for d in dicts[1:]:
-        for k, v in d.items():
-            if type(v) == int:
-                averaged_dict[k] = round((averaged_dict[k] + v) / len(dicts))
-            elif type(v) == float:
-                averaged_dict[k] = (averaged_dict[k] + v) / len(dicts)
-            elif type(v) == str:
-                averaged_dict[k] = v  # TODO: 改修必要
+    if dicts[0]:
+        for k, v in dicts[0].items():
+            averaged_dict[k] = v
+        for d in dicts[1:]:
+            for k, v in d.items():
+                if type(v) == int:
+                    averaged_dict[k] = round((averaged_dict[k] + v) / len(dicts))
+                elif type(v) == float:
+                    averaged_dict[k] = (averaged_dict[k] + v) / len(dicts)
+                elif type(v) == str:
+                    averaged_dict[k] = v  # TODO: 改修必要
 
     return averaged_dict
 
@@ -168,8 +195,8 @@ def preprocess_data_for_nn(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tup
 
     # カテゴリ変数をone hot encoding
     category_cols = df_train_for_nn.select_dtypes("category").columns
-    ohe = OneHotEncoder(sparse=False)
-    ohe.fit(pd.concat([df_train_for_nn[category_cols], df_test_for_nn[category_cols]]).astype("str"))
+    ohe = OneHotEncoder(sparse=False, handle_unknown="ignore")
+    ohe.fit(df_train_for_nn[category_cols].astype("str"))
     train_categorical_data = ohe.transform(df_train_for_nn[category_cols].astype("str"))
     df_train_categorical_for_nn = pd.DataFrame(
         data=train_categorical_data, columns=ohe.get_feature_names_out() + "_nn", index=df_train_for_nn.index
@@ -187,7 +214,7 @@ def preprocess_data_for_nn(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tup
 
 def get_params(method, trial):
     if method == "lightgbm":
-        if DO_HP_TUNING:
+        if DO_OPTUNA:
             if trial:  # optuna用
                 params = Params().get_lightgbm_params_range(trial)
             else:
@@ -199,7 +226,7 @@ def get_params(method, trial):
         else:
             params = Params.lgb_constant_params | Params.lgb_default_params
     elif method == "catboost":
-        if DO_HP_TUNING:
+        if DO_OPTUNA:
             if trial:
                 params = Params().get_catboost_params_range(trial)
             else:
@@ -211,7 +238,7 @@ def get_params(method, trial):
         else:
             params = Params.catboost_constant_params | Params.catboost_default_params
     elif method == "nn":
-        if DO_HP_TUNING:
+        if DO_OPTUNA:
             if trial:
                 params = Params().get_nn_params_range(trial)
             else:
@@ -222,6 +249,7 @@ def get_params(method, trial):
                 params = Params.nn_constant_params | best_params
         else:
             params = Params.nn_constant_params | Params.nn_default_params
+    return params
 
 
 def lightgbm_training(X_train, y_train, X_eval, y_eval, trial):
@@ -328,9 +356,9 @@ def objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tu
 
 
 def cv_training(methods, X, y):
-    best_weights = np.zeros((Params.n_splits, len(methods)))
+    best_weights_arr = np.zeros((Params.n_splits, len(methods)))
     best_negative_ratios = []
-    best_params = []
+    best_params_arr = []
     scores = []
     kf = KFold(n_splits=Params.n_splits, random_state=42, shuffle=True)
     for i, (train_eval_tune_index, valid_index) in enumerate(kf.split(X)):
@@ -343,25 +371,30 @@ def cv_training(methods, X, y):
         y_valid = y.iloc[valid_index].copy()
 
         # optuanaによる最適化
-        Params.study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=Params.seed + i))
-        Params.study.optimize(objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tune, y_tune), n_trials=Params.n_trials)
+        if DO_OPTUNA:
+            Params.study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=Params.seed + i))
+            Params.study.optimize(objective_with_args(methods, X_train, y_train, X_eval, y_eval, X_valid, X_tune, y_tune), n_trials=Params.n_trials)
+        else:
+            Params.study = None
 
         # validの予測
-        best_weight = []
+        best_weights = []
         valid_pred_probas = np.zeros((len(methods), X_valid.shape[0]))
         for j, method in enumerate(methods):
-            # 学習
             model = train(method, X_train, y_train, X_eval, y_eval, trial=None)
-            best_weight.append(Params.study.best_params[f"model_{j}_weight"])
             valid_pred_probas[j] = predict(method, model, X_valid)
-        valid_pred_proba = np.average(valid_pred_probas, axis=0, weights=best_weight)
-        valid_pred = postprocess_prediction(valid_pred_proba, Params.study.best_params["negative_ratio"])
+            best_weight = Params.study.best_params[f"model_{j}_weight"] if Params.study else Params.model_default_weights[j]
+            best_weights.append(best_weight)
+        valid_pred_proba = np.average(valid_pred_probas, axis=0, weights=best_weights)
+        best_negative_ratio = Params.study.best_params["negative_ratio"] if Params.study else Params.model_default_negative_ratio
+        valid_pred = postprocess_prediction(valid_pred_proba, best_negative_ratio)
         # 結果の格納
         scores.append(f1_score(y_valid, valid_pred, average="macro"))
-        best_weights[i] = best_weight
-        best_negative_ratios.append(Params.study.best_params["negative_ratio"])
-        best_params.append({k: v for k, v in Params.study.best_params.items() if ((k != "negative_ratio") & ("weight" not in k))})
-    return scores, best_params, best_weights, best_negative_ratios
+        best_weights_arr[i] = best_weights
+        best_negative_ratios.append(best_negative_ratio)
+        best_params = {k: v for k, v in Params.study.best_params.items() if ((k != "negative_ratio") & ("weight" not in k))} if Params.study else None
+        best_params_arr.append(best_params)
+    return scores, best_params_arr, best_weights_arr, best_negative_ratios
 
 
 def postprocess_prediction(y_pred_proba, negative_ratio):
