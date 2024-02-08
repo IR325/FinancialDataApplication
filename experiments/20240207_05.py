@@ -93,7 +93,7 @@ class Params:
         "hidden_units": 200,  # 隠れ層のユニット数
         "epochs": 5,
     }
-    tf.set_random_seed(seed)
+    tf.random.set_seed(seed)
     rf_constant_params = {
         "criterion": "log_loss",
         "random_state": seed,
