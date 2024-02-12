@@ -264,9 +264,9 @@ def save_cv_result(cv_scores):
     result_df = pd.DataFrame({"experiment_name": [EXPERIMENT_NAME], "cv_score": [np.mean(cv_scores)], "MEMO": [MEMO], "board_score": [None]})
 
     summary_path = os.path.join(RESULT_PATH, SUMMARY_FILENAME)
-    if os.path.exists(summary_path):
+    try:
         df = pd.read_csv(summary_path)
-    else:
+    except:
         df = pd.DataFrame({"experiment_name": [], "cv_score": [], "MEMO": [], "board_score": []})
     df = pd.concat([df, result_df]).drop_duplicates()
     df.to_csv(summary_path, index=False)

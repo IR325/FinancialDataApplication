@@ -250,7 +250,7 @@ def cv_training(methods, X, y):
         best_weights[i] = best_weight
         best_negative_ratios.append(Params.study.best_params["negative_ratio"])
         best_params.append({k: v for k, v in Params.study.best_params.items() if ((k != "negative_ratio") & ("weight" not in k))})
-    return np.mean(scores), _dict_average(best_params), np.mean(best_weights, axis=0), np.mean(best_negative_ratios)
+    return scores, _dict_average(best_params), np.mean(best_weights, axis=0), np.mean(best_negative_ratios)
 
 
 def postprocess_prediction(y_pred_proba, negative_ratio):
@@ -259,11 +259,13 @@ def postprocess_prediction(y_pred_proba, negative_ratio):
     return y_pred
 
 
-def save_cv_result(result_df: pd.DataFrame):
+def save_cv_result(cv_scores):
+    result_df = pd.DataFrame({"experiment_name": [EXPERIMENT_NAME], "cv_score": [np.mean(cv_scores)], "MEMO": [MEMO], "board_score": [None]})
+
     summary_path = os.path.join(RESULT_PATH, SUMMARY_FILENAME)
-    if os.path.exists(summary_path):
+    try:
         df = pd.read_csv(summary_path)
-    else:
+    except:
         df = pd.DataFrame({"experiment_name": [], "cv_score": [], "MEMO": [], "board_score": []})
     df = pd.concat([df, result_df]).drop_duplicates()
     df.to_csv(summary_path, index=False)
@@ -294,8 +296,7 @@ def Learning(methods, X, y):
     print(f"best_params: {cv_best_params}")
     print(f"best weight: {cv_best_weight}")
     print(f"best negative ratio: {cv_best_negative_ratio}")
-    result_df = pd.DataFrame({"experiment_name": [EXPERIMENT_NAME], "cv_score": [cv_score], "MEMO": [MEMO], "board_score": [None]})
-    save_cv_result(result_df)
+    save_cv_result(cv_score)
     # 各モデルの学習
     for method in methods:
         X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
