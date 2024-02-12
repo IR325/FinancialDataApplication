@@ -4,6 +4,7 @@ scikit-learn==1.2.2
 optuna==3.5.0
 tensorflow
 pandas==1.5.3
+autofeat
 # s3関連
 boto3
 fsspec
