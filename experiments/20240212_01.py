@@ -7,6 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 
+import fsspec
 import lightgbm as lgb
 import numpy as np
 import optuna

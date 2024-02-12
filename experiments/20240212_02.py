@@ -7,6 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 
+import fsspec
 import lightgbm as lgb
 import numpy as np
 import optuna
@@ -307,7 +308,7 @@ def Learning(methods, X, y):
         X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.25, random_state=Params.seed)
         model = _train(method, X_train, y_train, X_eval, y_eval, trial=None)
         models.append(model)
-        with open(os.path.join(IND_RESULT_PATH, f"{EXPERIMENT_NAME}_{method}_model.pickle"), mode="wb") as f:
+        with fsspec.open(os.path.join(IND_RESULT_PATH, f"{EXPERIMENT_NAME}_{method}_model.pickle"), mode="wb") as f:
             pickle.dump(model, f)
     return models, np.mean(cv_best_weights, axis=0), np.mean(cv_best_negative_ratios)
 
