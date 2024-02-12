@@ -22,8 +22,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 warnings.simplefilter("ignore")
 
 # 実行をどこで行うか
-IS_EC2 = True
-DO_OPTUNA = True
+IS_EC2 = False
+DO_OPTUNA = False
 # 共通設定
 if IS_EC2:
     BUCKET = "ryusuke-data-competition"
@@ -38,7 +38,7 @@ EXPERIMENT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 IND_RESULT_PATH = os.path.join(RESULT_PATH, EXPERIMENT_NAME)
 if not IS_EC2:
     os.makedirs(IND_RESULT_PATH, exist_ok=True)
-MEMO = "20240212_08_no_optuna.pyをベース．ymの追加とym系をカテゴリ変数に追加"
+MEMO = "20240212_08.pyをベース．ハイパラのみ変更"
 
 
 @dataclass
@@ -101,11 +101,11 @@ class Params:
         "verbosity": -1,
     }
     lgb_default_params = {
-        "feature_fraction": 0.08077310865874585,
-        "bagging_fraction": 0.05494362111207397,
+        "feature_fraction": 0.1677902074607869,
+        "bagging_fraction": 0.11961649929211123,
         "num_leaves": 13,
-        "lambda_l1": 0.7252596609901973,
-        "lambda_l2": 0.9127595738672964,
+        "lambda_l1": 0.9619150476292759,
+        "lambda_l2": 0.5303505605413363,
     }
     catboost_constant_params = {
         "learning_rate": 0.05,
@@ -114,10 +114,10 @@ class Params:
     }
     catboost_default_params = {
         "depth": 2,
-        "l2_leaf_reg": 0.3118099281811584,
-        "subsample": 0.05840531264012393,
-        "colsample_bylevel": 0.05584767124027292,
-        "min_data_in_leaf": 5,
+        "l2_leaf_reg": 0.7631639618350191,
+        "subsample": 0.1368711550219926,
+        "colsample_bylevel": 0.19528642238413346,
+        "min_data_in_leaf": 13,
     }
     nn_constant_params = {}
     nn_default_params = {  # 適当
@@ -128,8 +128,8 @@ class Params:
         "hidden_units": 34,  # 隠れ層のユニット数
         "epochs": 10,  # 学習済みモデルからの確認方法が不明
     }
-    model_default_weights = [0.66, 0.34]
-    model_default_negative_ratio = 0.080289
+    model_default_weights = [0.34, 0.66]
+    model_default_negative_ratio = 0.078521
     cv_best_params = None
 
     def get_lightgbm_params_range(self, trial):
