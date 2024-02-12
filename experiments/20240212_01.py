@@ -38,7 +38,7 @@ MEMO = "20240202_04.pyのseedを変えた．optunaにもシードを設定．"
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 100
+    n_trials = 2
     num_boost_round = 1000
     early_stopping_round = 200
     seed = 10
