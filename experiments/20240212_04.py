@@ -259,10 +259,7 @@ def _preprocess_unknown_city(train_data: pd.DataFrame, test_data: pd.DataFrame) 
     df = df.iloc[idx]
     rename_dict = dict(zip(df["State"].to_list(), df["City"].to_list()))
     # testデータにしかないCityは同じstateの最頻Cityで置換
-    test_data_1 = test_data[test_data["City"].isin(set(train_data["City"]))].copy()
-    test_data_2 = test_data[~test_data["City"].isin(set(train_data["City"]))].copy()
-    test_data_2["City"] = test_data_2["State"].apply(lambda x: rename_dict[x]).copy()
-    test_data = pd.concat([test_data_1, test_data_2])
+    test_data["City"] = test_data["City"].where(test_data["City"].isin(set(train_data["City"])), test_data["State"].map(rename_dict))
     return test_data
 
 
