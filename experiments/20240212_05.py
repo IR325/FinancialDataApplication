@@ -139,7 +139,7 @@ class Params:
         "hidden_units": 34,  # 隠れ層のユニット数
         "epochs": 10,  # 学習済みモデルからの確認方法が不明
     }
-    model_default_weights = [0.34, 0.66]
+    model_default_weights = [0.34, 0.33, 0.33]
     model_default_negative_ratio = 0.078521
     cv_best_params = None
 
@@ -547,9 +547,6 @@ def Preprocessing():
     test_data = preprocess_data(test_data, interest_data)
     # NN用前処理
     train_data, test_data = preprocess_data_for_nn(train_data, test_data)
-    import pdb
-
-    pdb.set_trace()
     # 説明変数と目的変数に分ける
     X = train_data.drop(columns="MIS_Status").copy()
     y = train_data["MIS_Status"].copy()
