@@ -22,7 +22,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 warnings.simplefilter("ignore")
 
 # 実行をどこで行うか
-IS_EC2 = False
+IS_EC2 = True
 DO_OPTUNA = True
 # 共通設定
 if IS_EC2:
