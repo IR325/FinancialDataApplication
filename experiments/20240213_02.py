@@ -22,7 +22,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 warnings.simplefilter("ignore")
 
 # 実行をどこで行うか
-IS_EC2 = False
+IS_EC2 = True
 DO_OPTUNA = True
 # 共通設定
 if IS_EC2:
@@ -45,7 +45,7 @@ MEMO = "20240212_03.pyをベース．cvされたモデルを全てアンサン�
 @dataclass
 class Params:
     n_splits = 5
-    n_trials = 2
+    n_trials = 100
     seed = 42
     methods = ["LightGBM", "CatBoost"]
     # 前処理関連
